@@ -1,0 +1,122 @@
+name: terraform-plan
+
+# Reusable: terraform plan per stack with a read-only role. On non-PR events (schedule, manual)
+# any change fails the job, so a scheduled run is a drift check.
+on:
+  workflow_call:
+    inputs:
+      stacks:
+        description: JSON array of stack directories, for example `["bootstrap", "audit"]`.
+        type: string
+        required: true
+      role_arn:
+        description: Role to assume for the plan.
+        type: string
+        required: true
+      aws_region:
+        description: AWS region.
+        type: string
+        required: true
+      backend_config:
+        description: Partial backend config file, relative to the repo root. Empty if each stack has a full backend block.
+        type: string
+        default: ""
+      terraform_version:
+        description: Terraform version to install.
+        type: string
+        default: "1.17.1"
+    secrets:
+      aws_access_key_id:
+        required: true
+      aws_secret_access_key:
+        required: true
+      tf_vars:
+        description: Optional `name=value` lines, exported as `TF_VAR_name`.
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  plan:
+    name: plan (${{ matrix.stack }})
+    # Fork PRs get no secrets, so skip them on purpose instead of failing.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: ${{ fromJSON(inputs.stacks) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+          terraform_wrapper: false
+
+      # The access key can only assume the role. Terraform runs on short-lived role credentials.
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          aws-access-key-id: ${{ secrets.aws_access_key_id }}
+          aws-secret-access-key: ${{ secrets.aws_secret_access_key }}
+          role-to-assume: ${{ inputs.role_arn }}
+          role-session-name: gha-${{ github.run_id }}-plan
+          role-duration-seconds: 900
+
+      - name: export tf vars
+        env:
+          TF_VARS: ${{ secrets.tf_vars }}
+        run: |
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            value="${line#*=}"
+            echo "::add-mask::$value"
+            delim="EOF_$(openssl rand -hex 8)"
+            { echo "TF_VAR_${line%%=*}<<${delim}"; echo "$value"; echo "$delim"; } >> "$GITHUB_ENV"
+          done <<< "$TF_VARS"
+
+      - name: terraform plan
+        working-directory: ${{ matrix.stack }}
+        env:
+          STACK: ${{ matrix.stack }}
+          EVENT_NAME: ${{ github.event_name }}
+          BACKEND_CONFIG: ${{ inputs.backend_config }}
+        run: |
+          if [ -n "$BACKEND_CONFIG" ]; then
+            terraform init -input=false -backend-config="$GITHUB_WORKSPACE/$BACKEND_CONFIG" > /dev/null
+          else
+            terraform init -input=false > /dev/null
+          fi
+
+          set +e
+          terraform plan -input=false -lock-timeout=60s -detailed-exitcode -no-color > plan.txt 2>&1
+          code=$?
+          set -e
+
+          # Public repos: print only the summary and errors, never the full plan.
+          summary=$(grep -E -A3 '^(Plan:|No changes\.|Error:)' plan.txt || true)
+          echo "$summary"
+          {
+            echo "### $STACK"
+            echo '```'
+            echo "$summary"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # 0 = no changes, 1 = error, 2 = changes present.
+          if [ "$code" -eq 1 ]; then
+            exit 1
+          fi
+          if [ "$code" -eq 2 ] && [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "::error::Drift detected in $STACK. Live AWS no longer matches main."
+            exit 1
+          fi
