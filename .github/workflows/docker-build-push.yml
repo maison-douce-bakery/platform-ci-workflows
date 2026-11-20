@@ -73,20 +73,31 @@ jobs:
           DOCKERFILE: ${{ inputs.dockerfile }}
         run: |
           registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${REGION}.amazonaws.com"
-          image="${registry}/${REPOSITORY}:${GITHUB_SHA}"
+          repository_uri="${registry}/${REPOSITORY}"
 
-          aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$registry"
-          docker build --provenance=false --file "$DOCKERFILE" --tag "$image" "$CONTEXT"
-          docker push "$image"
-
-          # Read the digest back from the registry, which is what a task definition must pin.
+          # The registry's tags are immutable, so re-running a commit that was already pushed would fail.
+          # Report the image it already has instead; the caller's own build check still runs every time.
           digest="$(aws ecr describe-images --repository-name "$REPOSITORY" \
-            --image-ids "imageTag=${GITHUB_SHA}" --query 'imageDetails[0].imageDigest' --output text)"
+            --image-ids "imageTag=${GITHUB_SHA}" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null)" || digest=""
+
+          if [ -n "$digest" ] && [ "$digest" != "None" ]; then
+            state="already in the registry"
+          else
+            aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$registry"
+            docker build --provenance=false --file "$DOCKERFILE" --tag "${repository_uri}:${GITHUB_SHA}" "$CONTEXT"
+            docker push "${repository_uri}:${GITHUB_SHA}"
+
+            # Read the digest back from the registry, which is what a task definition must pin.
+            digest="$(aws ecr describe-images --repository-name "$REPOSITORY" \
+              --image-ids "imageTag=${GITHUB_SHA}" --query 'imageDetails[0].imageDigest' --output text)"
+            state="pushed"
+          fi
+
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "image=${registry}/${REPOSITORY}@${digest}" >> "$GITHUB_OUTPUT"
+          echo "image=${repository_uri}@${digest}" >> "$GITHUB_OUTPUT"
           {
-            echo "### Pushed"
+            echo "### Image ${state}"
             echo '```'
-            echo "${registry}/${REPOSITORY}@${digest}"
+            echo "${repository_uri}@${digest}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
