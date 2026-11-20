@@ -6,6 +6,7 @@ Reusable GitHub Actions workflows for the platform repos.
 |---|---|
 | `terraform-static.yml` | `terraform fmt`, `validate`, optional `terraform test`, `tflint`. No cloud credentials |
 | `terraform-plan.yml` | `terraform plan` per stack with a read-only role. Fails on changes outside PRs (drift check) |
+| `docker-build-push.yml` | Build a container image on a native arm64 runner and push it to ECR, tagged with the commit SHA |
 
 ## Usage
 
@@ -54,3 +55,32 @@ jobs:
 | `terraform_version` | `1.17.1` | Terraform version |
 
 Optional secret `tf_vars`: `name=value` lines, exported as `TF_VAR_name`.
+
+### docker-build-push
+
+Checks show up as `image / push`. The caller needs the push credentials; only `main` should push.
+
+```yaml
+jobs:
+  image:
+    if: github.event_name == 'push'
+    uses: maison-douce-bakery/platform-ci-workflows/.github/workflows/docker-build-push.yml@<sha> # docker-build-push/v1.0.0
+    with:
+      ecr_repository: mdb/commerce-api
+      role_arn: ${{ vars.AWS_CI_PUSH_ROLE_ARN }}
+      aws_region: ${{ vars.AWS_REGION }}
+    secrets:
+      aws_access_key_id: ${{ secrets.AWS_CI_PUSH_ACCESS_KEY_ID }}
+      aws_secret_access_key: ${{ secrets.AWS_CI_PUSH_SECRET_ACCESS_KEY }}
+```
+
+| Input | Default | Description |
+|---|---|---|
+| `ecr_repository` | | Repository name in ECR |
+| `role_arn` | | Role to assume |
+| `aws_region` | | AWS region of the registry |
+| `context` | `.` | Build context |
+| `dockerfile` | `Dockerfile` | Dockerfile path |
+
+Outputs `digest` and `image` (repository plus digest). The image is tagged with the commit SHA and built
+natively on `ubuntu-24.04-arm`.
