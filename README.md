@@ -83,4 +83,5 @@ jobs:
 | `dockerfile` | `Dockerfile` | Dockerfile path |
 
 Outputs `digest` and `image` (repository plus digest). The image is tagged with the commit SHA and built
-natively on `ubuntu-24.04-arm`.
+natively on `ubuntu-24.04-arm`. Re-running a commit whose image is already in the registry reports that image
+instead of failing on the immutable tag, so the job is safe to re-run and to dispatch by hand.
