@@ -36,7 +36,7 @@ Checks show up as `plan / plan (<stack>)`.
 ```yaml
 jobs:
   plan:
-    uses: maison-douce-bakery/platform-ci-workflows/.github/workflows/terraform-plan.yml@<sha> # terraform-plan/v1.0.0
+    uses: maison-douce-bakery/platform-ci-workflows/.github/workflows/terraform-plan.yml@<sha> # terraform-plan/v1.1.0
     with:
       stacks: '["bootstrap", "audit"]'
       role_arn: ${{ vars.AWS_CI_PLAN_ROLE_ARN }}
@@ -52,6 +52,7 @@ jobs:
 | `role_arn` | | Role to assume |
 | `aws_region` | | AWS region |
 | `backend_config` | `""` | Partial backend config file, relative to the repo root |
+| `changed_stacks` | `""` | JSON array of stacks to plan; the others finish green without planning. Empty plans all |
 | `terraform_version` | `1.17.1` | Terraform version |
 
 Optional secret `tf_vars`: `name=value` lines, exported as `TF_VAR_name`.
